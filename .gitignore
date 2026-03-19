@@ -1,0 +1,14 @@
+# Environment (contains secrets)
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# DbgEng binaries (Microsoft redistributables, ~15MB)
+dbgeng_bin/
+
+# IDE
+.vscode/
+.idea/
