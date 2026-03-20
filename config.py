@@ -43,6 +43,12 @@ CONNECT_BACKOFF_SECONDS = 3
 # Default command timeout (milliseconds)
 DEFAULT_TIMEOUT_MS = 10_000
 
+# Stall detection (two-phase watchdog for Execute() calls)
+INITIAL_GRACE_S = int(os.environ.get("INITIAL_GRACE_S", "60"))
+STALL_TIMEOUT_S = int(os.environ.get("STALL_TIMEOUT_S", "30"))
+HARD_TIMEOUT_S = int(os.environ.get("HARD_TIMEOUT_S", "600"))
+AUTO_RESUME_S = int(os.environ.get("AUTO_RESUME_S", "15"))
+
 # Event queue max size
 EVENT_QUEUE_SIZE = 1000
 

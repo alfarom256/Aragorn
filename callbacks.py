@@ -82,6 +82,8 @@ class OutputCallbacks:
     def __init__(self):
         self._lock = threading.Lock()
         self._parts: list[str] = []
+        self.last_output_time: float | None = None
+        self.output_count: int = 0
 
         # prevent GC of closures
         self._qi_fn = _QI_TYPE(self._query_interface)
@@ -112,9 +114,11 @@ class OutputCallbacks:
             return text
 
     def clear(self):
-        """Discard accumulated output."""
+        """Discard accumulated output and reset progress tracking."""
         with self._lock:
             self._parts.clear()
+            self.last_output_time = None
+            self.output_count = 0
 
     # COM methods ──────────────────────────────────────────────────────
 
@@ -141,6 +145,8 @@ class OutputCallbacks:
                 decoded = str(text)
             with self._lock:
                 self._parts.append(decoded)
+                self.last_output_time = time.monotonic()
+                self.output_count += 1
         return S_OK
 
 

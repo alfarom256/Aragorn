@@ -30,7 +30,16 @@ class VMClient:
     async def exec(self, command: str, args: list[str] = None,
                    cwd: str = None, timeout: int = 30,
                    capture_output: bool = True, env: dict = None) -> dict:
-        """Execute a process on the VM."""
+        """Execute a process on the VM.
+
+        Args:
+            command: Executable path or name.
+            args: Command-line arguments.
+            cwd: Working directory.
+            timeout: Seconds before process is killed.
+            capture_output: Whether to capture stdout/stderr.
+            env: Extra environment variables.
+        """
         body = {
             "executable": command,
             "args": args or [],

@@ -18,6 +18,7 @@ import logging
 import os
 import signal
 import subprocess
+import threading
 import time
 
 from ctypes import c_void_p, byref
@@ -33,7 +34,7 @@ from .dbgeng import (
     DEBUG_ATTACH_KERNEL_CONNECTION,
     DEBUG_END_ACTIVE_DETACH,
     DEBUG_ENGOPT_INITIAL_BREAK,
-    DEBUG_INTERRUPT_ACTIVE,
+    DEBUG_INTERRUPT_ACTIVE, DEBUG_INTERRUPT_EXIT,
     DEBUG_STATUS_BREAK, DEBUG_STATUS_NO_DEBUGGEE, DEBUG_STATUS_GO,
     SYMOPT_UNDNAME, SYMOPT_DEFERRED_LOADS, SYMOPT_CASE_INSENSITIVE,
     INFINITE,
@@ -551,7 +552,7 @@ class Debugger:
     # ─── Command execution ───────────────────────────────────────────
 
     def execute(self, command: str, timeout_ms: int = None) -> str:
-        """Execute a debugger command and return the captured text output."""
+        """Execute with two-phase stall detection watchdog."""
         self._require_connected()
         if timeout_ms is None:
             timeout_ms = config.DEFAULT_TIMEOUT_MS
@@ -559,8 +560,65 @@ class Debugger:
         log.info("exec: %s", command)
         self.output_cb.clear()
         cmd_bytes = command.encode("utf-8")
-        self.control.Execute(cmd_bytes)
+
+        grace_s = config.INITIAL_GRACE_S
+        stall_s = config.STALL_TIMEOUT_S
+        hard_s = config.HARD_TIMEOUT_S
+
+        aborted = False
+        reason = ""
+        stop = threading.Event()
+
+        def _kill_kd():
+            if self._kd_process and self._kd_process.poll() is None:
+                log.warning("Watchdog: killing kd.exe (PID %d)", self._kd_process.pid)
+                self._kd_process.kill()
+
+        def _wd():
+            nonlocal aborted, reason
+            t0 = time.monotonic()
+            while not stop.wait(2.0):
+                elapsed = time.monotonic() - t0
+                # Hard timeout — always kill
+                if elapsed >= hard_s:
+                    reason = f"hard timeout ({hard_s}s)"
+                    aborted = True
+                    log.warning("Watchdog: %s for '%s'", reason, command)
+                    _kill_kd()
+                    return
+                # After grace period, check for stall
+                if elapsed >= grace_s:
+                    last = self.output_cb.last_output_time
+                    if last is None:
+                        # No output at all after grace period
+                        reason = f"no output after {grace_s}s grace"
+                        aborted = True
+                        log.warning("Watchdog: %s for '%s'", reason, command)
+                        _kill_kd()
+                        return
+                    if time.monotonic() - last >= stall_s:
+                        reason = f"output stalled for {stall_s}s"
+                        aborted = True
+                        log.warning("Watchdog: %s for '%s'", reason, command)
+                        _kill_kd()
+                        return
+
+        wd_thread = threading.Thread(target=_wd, daemon=True, name="wd-execute")
+        wd_thread.start()
+        try:
+            self.control.Execute(cmd_bytes)
+        except (DbgEngError, OSError) as e:
+            if not aborted:
+                raise
+            log.warning("Execute() raised after watchdog kill: %s", e)
+        finally:
+            stop.set()
+            wd_thread.join(timeout=3.0)
+
         output = self.output_cb.get_text()
+        if aborted:
+            output += f"\n\n[ARAGORN] Command aborted: {reason}.\n"
+            self._connected = False
         if output:
             first_line = output.split("\n")[0][:120]
             log.info("  → %s", first_line)
@@ -1043,13 +1101,18 @@ def status_name(code: int) -> str:
     return Debugger._status_name(code)
 
 
-async def run_on_com_thread(func, *args):
+async def run_on_com_thread(func, *args, timeout: float = 0):
     """Run *func* on the dedicated DbgEng COM thread.
 
     Every DbgEng COM call MUST go through this helper to maintain
     thread affinity and avoid RPC_E_WRONG_THREAD (0x8001010E).
 
     If multi-session is active, routes to the active session's COM thread.
+
+    Args:
+        func: Callable to run on the COM thread.
+        *args: Arguments to pass to func.
+        timeout: Seconds before giving up (0 = use config.HARD_TIMEOUT_S).
     """
     # Check if multi-session registry has sessions — use their COM thread
     try:
@@ -1058,19 +1121,31 @@ async def run_on_com_thread(func, *args):
         if reg.list_sessions():
             active_id = reg.active_session_id
             if active_id:
-                return await reg.run_on_com_thread(active_id, func, *args)
+                return await reg.run_on_com_thread(active_id, func, *args,
+                                                   timeout=timeout)
     except (ImportError, KeyError):
         pass
 
     # Fallback to singleton COM thread
     loop = asyncio.get_running_loop()
-    name = getattr(func, "__name__", repr(func))
-    log.debug("COM→ %s", name)
+    fname = getattr(func, "__name__", repr(func))
+    log.debug("COM→ %s", fname)
+    ceiling = timeout if timeout > 0 else config.HARD_TIMEOUT_S
     try:
-        result = await loop.run_in_executor(_com_executor, func, *args)
+        result = await asyncio.wait_for(
+            loop.run_in_executor(_com_executor, func, *args),
+            timeout=ceiling,
+        )
         return result
+    except asyncio.TimeoutError:
+        log.error("COM timeout (%ss) for %s — killing kd.exe", ceiling, fname)
+        dbg = get_debugger_or_none()
+        if dbg and dbg._kd_process and dbg._kd_process.poll() is None:
+            dbg._kd_process.kill()
+            dbg._connected = False
+        raise DbgEngError(-1, f"COM thread timeout ({ceiling}s) for {fname}")
     except Exception as e:
-        log.warning("COM✗ %s: %s", name, e)
+        log.warning("COM✗ %s: %s", fname, e)
         raise
 
 
