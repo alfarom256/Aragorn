@@ -197,7 +197,16 @@ DEBUG_EVENT_CHANGE_ENGINE_STATE_BIT   = 0x00000800
 DEBUG_EVENT_CHANGE_SYMBOL_STATE_BIT   = 0x00001000
 
 ALL_EVENTS = (
-    DEBUG_EVENT_BREAKPOINT_BIT |
+    # DEBUG_EVENT_BREAKPOINT_BIT intentionally NOT set: registering for BP
+    # events forces every BP hit through our Python WINFUNCTYPE callback,
+    # which acquires the GIL and pushes to a Python queue. At high BP rates
+    # (e.g. minifilter callbacks fielding all-system FltMgr I/O), that
+    # per-hit Python cost saturates the COM thread and starves the VM's
+    # user-mode HTTP listener — what we colloquially call "the wedge".
+    # DbgEng handles BP events fine without our callback: it evaluates the
+    # BP command (`.if .else gc` / `bp /w`) entirely in C++ and only
+    # actually breaks when the condition is true. We detect a real break
+    # via GetExecutionStatus polling.
     DEBUG_EVENT_EXCEPTION_BIT |
     DEBUG_EVENT_LOAD_MODULE_BIT |
     DEBUG_EVENT_UNLOAD_MODULE_BIT |
@@ -337,7 +346,19 @@ class EventCallbacks:
 
     def _breakpoint(self, this, bp_ptr):
         self._push({"event": "breakpoint_hit"})
-        return DEBUG_STATUS_BREAK
+        # Return DEBUG_STATUS_GO (vote: continue), not NO_CHANGE.
+        # Per dbgeng's "Monitoring Events" docs, BP events break into
+        # the debugger by default and the engine takes the highest-
+        # precedence return value across all registered callbacks.
+        # NO_CHANGE doesn't contribute, so the default BREAK wins —
+        # which means /w "false" conditions ALSO break to the user
+        # (the engine's own /w "false → continue" verdict can't out-
+        # vote the default). Voting GO here lets /w false take effect:
+        #   - /w false: engine internal vote = GO, ours = GO → continue
+        #   - /w true:  engine internal vote = BREAK, ours = GO → BREAK wins
+        #   - no /w, plain BP: engine default = BREAK, ours = GO → BREAK wins
+        # Net effect: conditional BPs work, unconditional BPs still break.
+        return DEBUG_STATUS_GO
 
     def _exception(self, this, exception_record, first_chance):
         self._push({

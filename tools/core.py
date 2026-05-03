@@ -1,12 +1,15 @@
 """Core command execution tools."""
 
 import asyncio
-import logging
+import os
 
 from .. import config
 from ..debugger import get_debugger, run_on_com_thread
 
-log = logging.getLogger("aragorn.tools.core")
+
+def _supervisor_mode() -> bool:
+    return os.environ.get("ARAGORN_SUPERVISOR_MODE", "1") == "1" \
+        and os.environ.get("ARAGORN_WORKER", "0") != "1"
 
 
 def register(mcp):
@@ -15,93 +18,38 @@ def register(mcp):
     async def execute(command: str, timeout: int = 10000) -> str:
         """Execute a raw debugger command and return its text output.
 
+        The worker's `Debugger.execute` has its own stall-detection
+        watchdog (see debugger.py — INITIAL_GRACE_S / STALL_TIMEOUT_S /
+        HARD_TIMEOUT_S). We just dispatch and let it run, with a single
+        outer asyncio timeout as the absolute ceiling.
+
         Args:
             command: Any WinDbg/DbgEng command (e.g., "lm", "!process 0 0",
                      "dt nt!_EPROCESS @$proc").
-            timeout: Timeout in milliseconds (default 10000).
-
-        Returns:
-            The command's text output.
+            timeout: Timeout in milliseconds for the WinDbg command itself.
         """
-        dbg = get_debugger()
-
-        timeout_s = timeout / 1000.0
-        stall_s = config.STALL_TIMEOUT_S
-        hard_s = config.HARD_TIMEOUT_S
-
-        task = asyncio.ensure_future(
-            run_on_com_thread(dbg.execute, command, timeout)
-        )
-
-        # Wait for initial grace period
-        done, _ = await asyncio.wait({task}, timeout=timeout_s)
-        if done:
-            return task.result()
-
-        # Not done yet — check if any output arrived
-        count_at_check = dbg.output_cb.output_count if dbg.output_cb else 0
-        if count_at_check == 0:
-            # No output at all — kill immediately
-            log.warning("execute: no output after %ss for '%s', killing",
-                        timeout_s, command)
-            if dbg._kd_process and dbg._kd_process.poll() is None:
-                dbg._kd_process.kill()
-                dbg._connected = False
-            # Wait briefly for the task to finish after kill
-            done, _ = await asyncio.wait({task}, timeout=5.0)
-            partial = ""
-            if done:
+        hard_s = getattr(config, 'HARD_TIMEOUT_S', 600)
+        # Outer ceiling — worker timeout + a little buffer.
+        ceiling = max(timeout / 1000.0 + 5.0, hard_s)
+        try:
+            return await asyncio.wait_for(
+                run_on_com_thread(get_debugger().execute, command, timeout),
+                timeout=ceiling,
+            )
+        except asyncio.TimeoutError:
+            # Outer ceiling hit — worker is wedged. In supervisor mode,
+            # restart the worker. In legacy, abort transport.
+            if _supervisor_mode():
+                from ..supervisor import get_supervisor
                 try:
-                    partial = task.result()
-                except Exception:
-                    pass
-            return (partial +
-                    f"\n\n[ARAGORN] Command timed out ({timeout_s}s) with "
-                    f"no output.\n")
-
-        # Output is flowing — monitor for stalls up to hard deadline
-        deadline = asyncio.get_event_loop().time() + hard_s
-        last_count = count_at_check
-        while asyncio.get_event_loop().time() < deadline:
-            done, _ = await asyncio.wait({task}, timeout=stall_s)
-            if done:
-                return task.result()
-            current_count = (dbg.output_cb.output_count
-                             if dbg.output_cb else 0)
-            if current_count == last_count:
-                # Output stalled
-                log.warning("execute: output stalled for %ss on '%s', killing",
-                            stall_s, command)
-                if dbg._kd_process and dbg._kd_process.poll() is None:
-                    dbg._kd_process.kill()
-                    dbg._connected = False
-                done, _ = await asyncio.wait({task}, timeout=5.0)
-                partial = ""
-                if done:
-                    try:
-                        partial = task.result()
-                    except Exception:
-                        pass
-                return (partial +
-                        f"\n\n[ARAGORN] Command aborted: output stalled "
-                        f"for {stall_s}s.\n")
-            last_count = current_count
-
-        # Hard deadline exceeded
-        log.warning("execute: hard timeout (%ss) for '%s', killing",
-                    hard_s, command)
-        if dbg._kd_process and dbg._kd_process.poll() is None:
-            dbg._kd_process.kill()
-            dbg._connected = False
-        done, _ = await asyncio.wait({task}, timeout=5.0)
-        partial = ""
-        if done:
-            try:
-                partial = task.result()
-            except Exception:
-                pass
-        return (partial +
-                f"\n\n[ARAGORN] Command aborted: hard timeout ({hard_s}s).\n")
+                    info = await asyncio.wait_for(
+                        get_supervisor().restart(), timeout=10.0)
+                except Exception as e:
+                    info = f"restart_failed: {e}"
+                return (f"\n[ARAGORN] Command exceeded outer ceiling "
+                        f"({ceiling:.0f}s). Worker restarted ({info}).")
+            return (f"\n[ARAGORN] Command exceeded outer ceiling "
+                    f"({ceiling:.0f}s). Call reset_engine().")
 
     @mcp.tool()
     async def execute_batch(commands: list[str], stop_on_error: bool = False,
@@ -116,29 +64,9 @@ def register(mcp):
         Returns:
             List of {command, output, success, error?} dicts.
         """
-        def _run():
-            dbg = get_debugger()
-            results = []
-            for cmd in commands:
-                try:
-                    output = dbg.execute(cmd, timeout_ms=timeout)
-                    results.append({
-                        "command": cmd,
-                        "output": output,
-                        "success": True,
-                    })
-                except Exception as e:
-                    results.append({
-                        "command": cmd,
-                        "output": "",
-                        "success": False,
-                        "error": str(e),
-                    })
-                    if stop_on_error:
-                        break
-            return results
-
-        return await run_on_com_thread(_run)
+        return await run_on_com_thread(
+            get_debugger().execute_batch_commands,
+            commands, stop_on_error, timeout)
 
     @mcp.tool()
     async def evaluate(expression: str) -> dict:

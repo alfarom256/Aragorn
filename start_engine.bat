@@ -3,7 +3,7 @@
 :: Right-click this file and select "Run as administrator".
 ::
 :: Starts the Aragorn MCP server on http://127.0.0.1:14401/mcp
-:: for kernel debugging via MCP.
+:: which MCP clients connect to for kernel debugging.
 
 title Aragorn Kernel Debugger Engine
 

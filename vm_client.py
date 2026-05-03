@@ -16,7 +16,7 @@ log = logging.getLogger("aragorn.vm_client")
 
 
 class VMClient:
-    """Async HTTP client for the VM agent REST API."""
+    """Async HTTP client for the VM agent REST API on the VM."""
 
     def __init__(self, url: str = None, api_key: str = None):
         self.url = (url or config.VM_AGENT_URL).rstrip("/")
@@ -135,7 +135,8 @@ def get_vm_client(url: str | None = None, api_key: str | None = None) -> VMClien
     """Get or create a VMClient.
 
     If url is provided and differs from the cached client's URL,
-    a new client is created.
+    a new client is created. This prevents stale singletons when
+    switching between VMs or sessions.
     """
     global _client, _client_url
     target_url = url or config.VM_AGENT_URL

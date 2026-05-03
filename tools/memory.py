@@ -48,13 +48,8 @@ def register(mcp):
         Returns:
             Formatted memory contents.
         """
-        def _impl():
-            dbg = get_debugger()
-            addr = int(address, 0)
-            sz = min(size, 1024 * 1024)
-            data = dbg.data.ReadVirtual(addr, sz)
-            return _format_bytes(data, format, addr)
-        return await run_on_com_thread(_impl)
+        return await run_on_com_thread(
+            get_debugger().read_virtual_formatted, address, size, format)
 
     @mcp.tool()
     async def write_memory(address: str, hex_data: str) -> dict:
@@ -67,13 +62,8 @@ def register(mcp):
         Returns:
             Dict with bytes_written count.
         """
-        def _impl():
-            dbg = get_debugger()
-            addr = int(address, 0)
-            data = bytes.fromhex(hex_data.replace(" ", ""))
-            written = dbg.data.WriteVirtual(addr, data)
-            return {"address": f"0x{addr:016X}", "bytes_written": written}
-        return await run_on_com_thread(_impl)
+        return await run_on_com_thread(
+            get_debugger().write_virtual_bytes, address, hex_data)
 
     @mcp.tool()
     async def search_memory(address: str, pattern: str, length: int = 4096) -> dict:
@@ -87,13 +77,8 @@ def register(mcp):
         Returns:
             Dict with match_address if found.
         """
-        def _impl():
-            dbg = get_debugger()
-            addr = int(address, 0)
-            pat = bytes.fromhex(pattern.replace(" ", ""))
-            match = dbg.data.SearchVirtual(addr, length, pat)
-            return {"match_address": f"0x{match:016X}"}
-        return await run_on_com_thread(_impl)
+        return await run_on_com_thread(
+            get_debugger().search_virtual, address, pattern, length)
 
     @mcp.tool()
     async def read_physical(address: str, size: int = 64) -> str:
@@ -106,13 +91,8 @@ def register(mcp):
         Returns:
             Hex-formatted memory dump.
         """
-        def _impl():
-            dbg = get_debugger()
-            addr = int(address, 0)
-            sz = min(size, 1024 * 1024)
-            data = dbg.data.ReadPhysical(addr, sz)
-            return _format_bytes(data, "hex", addr)
-        return await run_on_com_thread(_impl)
+        return await run_on_com_thread(
+            get_debugger().read_physical_formatted, address, size)
 
     @mcp.tool()
     async def write_physical(address: str, hex_data: str) -> dict:
@@ -122,13 +102,8 @@ def register(mcp):
             address: Physical address (hex string).
             hex_data: Hex-encoded bytes to write.
         """
-        def _impl():
-            dbg = get_debugger()
-            addr = int(address, 0)
-            data = bytes.fromhex(hex_data.replace(" ", ""))
-            written = dbg.data.WritePhysical(addr, data)
-            return {"address": f"0x{addr:016X}", "bytes_written": written}
-        return await run_on_com_thread(_impl)
+        return await run_on_com_thread(
+            get_debugger().write_physical_bytes, address, hex_data)
 
     @mcp.tool()
     async def virtual_to_physical(address: str) -> dict:
@@ -140,15 +115,8 @@ def register(mcp):
         Returns:
             Dict with physical address.
         """
-        def _impl():
-            dbg = get_debugger()
-            addr = int(address, 0)
-            phys = dbg.data.VirtualToPhysical(addr)
-            return {
-                "virtual": f"0x{addr:016X}",
-                "physical": f"0x{phys:016X}",
-            }
-        return await run_on_com_thread(_impl)
+        return await run_on_com_thread(
+            get_debugger().translate_v2p, address)
 
     @mcp.tool()
     async def read_msr(msr_id: int) -> dict:
@@ -165,12 +133,5 @@ def register(mcp):
         Returns:
             Dict with MSR value.
         """
-        def _impl():
-            dbg = get_debugger()
-            value = dbg.data.ReadMsr(msr_id)
-            return {
-                "msr": f"0x{msr_id:X}",
-                "value": f"0x{value:016X}",
-                "decimal": value,
-            }
-        return await run_on_com_thread(_impl)
+        return await run_on_com_thread(
+            get_debugger().read_msr_value, msr_id)

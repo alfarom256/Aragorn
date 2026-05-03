@@ -1,7 +1,7 @@
 """Multi-session debugger management.
 
 Manages multiple Debugger instances, each with its own kd.exe subprocess
-and COM thread. Tools take an
+and COM thread. Follows the boneless-ida session pattern — tools take an
 optional session_id, defaulting to the active session.
 
 Each session represents an independent kernel debugger connection to a
@@ -78,31 +78,33 @@ class SessionRegistry:
             raise KeyError(f"Session '{info.session_id}' has no debugger. Call session_connect().")
         return info.debugger
 
-    async def run_on_com_thread(self, session_id: str, func, *args,
-                               timeout: float = 0):
-        """Run func on the session's dedicated COM thread."""
+    async def run_on_com_thread(self, session_id: str, func, *args, timeout: float = 0):
+        """Run func on the session's dedicated COM thread with timeout."""
+        import asyncio
+        from . import config
         info = self.resolve_session(session_id)
         if info.com_executor is None:
             raise KeyError(f"Session '{info.session_id}' has no COM executor.")
         loop = asyncio.get_running_loop()
-        ceiling = timeout if timeout > 0 else config.HARD_TIMEOUT_S
+        ceiling = timeout if timeout > 0 else getattr(config, "HARD_TIMEOUT_S", 600)
         try:
             return await asyncio.wait_for(
                 loop.run_in_executor(info.com_executor, func, *args),
                 timeout=ceiling,
             )
         except asyncio.TimeoutError:
+            # Abort transport (transport-aware) to unblock the stuck COM thread.
+            recovery = None
+            if info.debugger is not None:
+                try:
+                    recovery = info.debugger.recover_from_wedge()
+                except Exception as e:
+                    recovery = {"status": "recover_failed", "error": str(e)}
             from .dbgeng import DbgEngError
-            log.error("COM timeout (%ss) for session '%s' — killing kd.exe",
-                      ceiling, info.session_id)
-            if (info.debugger and info.debugger._kd_process
-                    and info.debugger._kd_process.poll() is None):
-                info.debugger._kd_process.kill()
-                info.debugger._connected = False
-            raise DbgEngError(
-                -1, f"COM thread timeout ({ceiling}s) for session "
-                    f"'{info.session_id}'"
-            )
+            raise DbgEngError(-1,
+                f"COM call timed out after {ceiling:.0f}s. "
+                f"Transport aborted ({recovery}). "
+                f"Call ensure_ready() to reconnect.")
 
     async def create_session(
         self,
@@ -183,8 +185,8 @@ class SessionRegistry:
             # Temporarily override config for this session's connection
             orig_conn = config.KD_CONNECTION
             orig_port = config.KD_SERVER_PORT
-            orig_agent_url = config.VM_AGENT_URL
-            orig_agent_key = config.VM_AGENT_API_KEY
+            orig_lb_url = config.VM_AGENT_URL
+            orig_lb_key = config.VM_AGENT_API_KEY
             orig_retries = config.CONNECT_RETRIES
             try:
                 config.KD_CONNECTION = info.kd_connection
@@ -197,8 +199,8 @@ class SessionRegistry:
             finally:
                 config.KD_CONNECTION = orig_conn
                 config.KD_SERVER_PORT = orig_port
-                config.VM_AGENT_URL = orig_agent_url
-                config.VM_AGENT_API_KEY = orig_agent_key
+                config.VM_AGENT_URL = orig_lb_url
+                config.VM_AGENT_API_KEY = orig_lb_key
                 config.CONNECT_RETRIES = orig_retries
 
         try:
@@ -217,9 +219,12 @@ class SessionRegistry:
         if info.debugger is None or not info.debugger.is_connected:
             return {"status": "not_connected", "session_id": info.session_id}
 
-        # Kill kd.exe first to unblock any stuck COM calls
-        if info.debugger._kd_process and info.debugger._kd_process.poll() is None:
-            info.debugger._kd_process.kill()
+        # Abort transport first to unblock any stuck COM call.
+        try:
+            info.debugger.recover_from_wedge()
+        except Exception as e:
+            log.warning("disconnect_session '%s': recover_from_wedge: %s",
+                        info.session_id, e)
 
         def _disconnect():
             info.debugger.shutdown()
@@ -231,8 +236,7 @@ class SessionRegistry:
                 timeout=5.0,
             )
         except (asyncio.TimeoutError, Exception) as e:
-            log.warning("disconnect_session '%s' error (non-fatal): %s",
-                        info.session_id, e)
+            log.warning("disconnect_session '%s': %s", info.session_id, e)
         info.debugger = None
         log.info("Session '%s' disconnected", info.session_id)
         return {"status": "disconnected", "session_id": info.session_id}
@@ -245,36 +249,29 @@ class SessionRegistry:
 
             info = self._sessions[session_id]
 
-            # Kill kd.exe first to unblock any stuck COM calls
-            if (info.debugger is not None
-                    and info.debugger._kd_process
-                    and info.debugger._kd_process.poll() is None):
-                info.debugger._kd_process.kill()
+            # Abort transport first to unblock any stuck COM calls.
+            if info.debugger is not None:
+                try:
+                    recovery = info.debugger.recover_from_wedge()
+                    log.info("destroy_session '%s': %s", session_id, recovery)
+                except Exception as e:
+                    log.warning("destroy_session '%s': recover_from_wedge: %s",
+                                session_id, e)
 
-            # Disconnect debugger
+            # Disconnect debugger (with timeout — COM thread may be stuck)
             if info.debugger is not None and info.com_executor is not None:
                 try:
                     loop = asyncio.get_running_loop()
                     await asyncio.wait_for(
-                        loop.run_in_executor(
-                            info.com_executor, info.debugger.shutdown),
+                        loop.run_in_executor(info.com_executor, info.debugger.shutdown),
                         timeout=5.0,
                     )
                 except (asyncio.TimeoutError, Exception) as e:
-                    log.warning("Error shutting down session '%s': %s",
-                                session_id, e)
+                    log.warning("Session '%s' shutdown: %s (proceeding)", session_id, e)
 
             # Shutdown COM thread
             if info.com_executor is not None:
-                try:
-                    await asyncio.wait_for(
-                        asyncio.get_running_loop().run_in_executor(
-                            None, info.com_executor.shutdown, False),
-                        timeout=5.0,
-                    )
-                except (asyncio.TimeoutError, Exception) as e:
-                    log.warning("Error shutting down COM executor for '%s': %s",
-                                session_id, e)
+                info.com_executor.shutdown(wait=False)
 
             del self._sessions[session_id]
 

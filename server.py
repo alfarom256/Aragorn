@@ -7,7 +7,8 @@ Architecture:
     MCP Client ──MCP/stdio──► Aragorn ──DebugConnect(TCP)──► kd.exe ──kdnet──► VM kernel
 
 Usage:
-    # Launch via .mcp.json (stdio) or run directly for HTTP mode:
+    # Normally launched by an MCP client via .mcp.json (stdio).
+    # Or run directly for HTTP mode:
     python server.py --http
 """
 
@@ -40,7 +41,9 @@ from Aragorn.tools import (
     events,
     kernel,
     workflow,
+    context,
 )
+from Aragorn.tools._state import StateWrappingMCP
 
 # Configure logging
 logging.basicConfig(
@@ -70,10 +73,13 @@ mcp = FastMCP(
 )
 
 # Register all tool modules
+# Every tool registered below gets wrapped so its errors carry a
+# debugger-state snapshot. See Aragorn/tools/_state.py.
+_wrapped_mcp = StateWrappingMCP(mcp)
 for mod in [core, session, multi_session, memory, registers, stack,
             breakpoints, execution, inspection, symbols, events, kernel,
-            workflow]:
-    mod.register(mcp)
+            workflow, context]:
+    mod.register(_wrapped_mcp)
 
 
 if __name__ == "__main__":

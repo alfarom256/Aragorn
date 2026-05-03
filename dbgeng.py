@@ -187,6 +187,10 @@ def _guid(s: str) -> GUID:
 # Interface IIDs
 IID_IUnknown             = _guid("{00000000-0000-0000-C000-000000000046}")
 IID_IDebugClient         = _guid("{27fe5639-8407-4f47-8364-ee118fb08ac8}")
+IID_IDebugClient2        = _guid("{edbed635-372e-4dab-bbfe-ed0d2f63be81}")
+IID_IDebugClient3        = _guid("{dd492d7f-71b8-4ad6-a8dc-1c887479ff91}")
+IID_IDebugClient4        = _guid("{ca83c3de-5089-4cf8-93c8-d892387f2a5e}")
+IID_IDebugClient5        = _guid("{e3acb9d7-7ec2-4f0c-a0da-e81e0cbbe628}")
 IID_IDebugControl        = _guid("{5182e668-105e-416e-ad92-24ef800424ba}")
 IID_IDebugDataSpaces     = _guid("{88f7dfab-3ea7-4c3a-aefb-c4e8106173aa}")
 IID_IDebugDataSpaces2    = _guid("{7a5e852f-96e9-468f-ac1b-0b3addc4a049}")
@@ -357,6 +361,19 @@ class DebugClient(ComPtr):
         hr = self._call(3, [c_ulong, c_char_p],
                         c_ulong(DEBUG_ATTACH_KERNEL_CONNECTION), connect_options)
         check_hr(hr, "AttachKernel")
+
+    def AttachKernelWide(self, connect_options: str):
+        """Slot 66 (IDebugClient5): AttachKernelWide(ULONG Flags, PCWSTR ConnectOptions).
+
+        kd.exe uses this Wide variant internally after QI-ing for
+        IDebugClient5. Some dbgeng builds appear to stub the ANSI
+        AttachKernel (returns S_OK but silently no-ops), while the
+        Wide variant actually initializes the kdnet session.
+        """
+        from ctypes import c_wchar_p
+        hr = self._call(66, [c_ulong, c_wchar_p],
+                        c_ulong(DEBUG_ATTACH_KERNEL_CONNECTION), connect_options)
+        check_hr(hr, "AttachKernelWide")
 
     def DetachProcesses(self):
         """Slot 25: DetachProcesses()"""
@@ -894,6 +911,29 @@ class DebugSystemObjects(ComPtr):
                         c_ulonglong(offset), byref(pid))
         check_hr(hr, "GetProcessIdByDataOffset")
         return pid.value
+
+    def GetCurrentThreadSystemId(self) -> int:
+        """Slot 17: GetCurrentThreadSystemId(PULONG SysId) -> OS thread id"""
+        sid = c_ulong()
+        hr = self._call(17, [PULONG], byref(sid))
+        check_hr(hr, "GetCurrentThreadSystemId")
+        return sid.value
+
+    def GetCurrentProcessSystemId(self) -> int:
+        """Slot 27: GetCurrentProcessSystemId(PULONG SysId) -> OS pid"""
+        sid = c_ulong()
+        hr = self._call(27, [PULONG], byref(sid))
+        check_hr(hr, "GetCurrentProcessSystemId")
+        return sid.value
+
+    def GetCurrentProcessExecutableName(self) -> str:
+        """Slot 31: GetCurrentProcessExecutableName(PSTR, ULONG, PULONG)"""
+        buf = ctypes.create_string_buffer(512)
+        size = c_ulong()
+        hr = self._call(31, [c_char_p, c_ulong, PULONG],
+                        buf, c_ulong(512), byref(size))
+        check_hr(hr, "GetCurrentProcessExecutableName")
+        return buf.value.decode("utf-8", errors="replace")
 
 
 # ══════════════════════════════════════════════════════════════════════

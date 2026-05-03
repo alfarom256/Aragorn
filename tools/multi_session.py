@@ -1,6 +1,6 @@
 """Multi-session debugger management tools.
 
-Create sessions with session_create(),
+Follows the boneless-ida pattern: create sessions with session_create(),
 then target them with session_id on any tool. If session_id is omitted,
 the active session is used.
 """
@@ -34,11 +34,11 @@ def register(mcp):
 
         Args:
             session_id: Unique identifier (e.g. "vm-01", "info-leak-agent")
-            kd_connection: kdnet connection string (e.g. "net:port=55556,key=...,target=172.26.50.192")
+            kd_connection: kdnet connection string (e.g. "net:port=55556,key=...,target=YOUR_VM_IP")
             kd_server_port: Local TCP port for this session's kd.exe (must be unique, e.g. 14501)
             label: Human-readable label
-            vm_agent_url: VM agent URL for this VM (e.g. "http://172.26.50.192:8080")
-            vm_agent_api_key: API key for the VM agent
+            vm_agent_url: VM agent URL for this VM (e.g. "http://YOUR_VM_IP:8080")
+            vm_agent_api_key: API key for VM agent
             vm_name: Hyper-V VM name
             auto_connect: Connect to the kernel immediately (default True)
         """

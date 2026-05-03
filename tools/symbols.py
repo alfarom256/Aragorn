@@ -1,7 +1,6 @@
 """Symbol and type information tools."""
 
 from ..debugger import get_debugger, run_on_com_thread
-from ..dbgeng import DbgEngError
 
 
 def register(mcp):
@@ -18,25 +17,8 @@ def register(mcp):
         Returns:
             Dict with symbol name, address, and displacement.
         """
-        def _impl():
-            dbg = get_debugger()
-            if name:
-                offset = dbg.symbols.GetOffsetByName(name.encode("utf-8"))
-                return {
-                    "name": name,
-                    "address": f"0x{offset:016X}",
-                }
-            elif address:
-                addr = int(address, 0)
-                sym_name, disp = dbg.symbols.GetNameByOffset(addr)
-                return {
-                    "address": f"0x{addr:016X}",
-                    "name": sym_name,
-                    "displacement": f"+0x{disp:X}" if disp else "",
-                }
-            else:
-                raise ValueError("Must provide either name or address")
-        return await run_on_com_thread(_impl)
+        return await run_on_com_thread(
+            get_debugger().resolve_symbol_name, name=name, address=address)
 
     @mcp.tool()
     async def get_field_offset(type_name: str, field_name: str) -> dict:
@@ -49,26 +31,8 @@ def register(mcp):
         Returns:
             Dict with offset value.
         """
-        def _impl():
-            dbg = get_debugger()
-            parts = type_name.split("!")
-            if len(parts) == 2:
-                module_name, type_only = parts
-            else:
-                module_name = "nt"
-                type_only = type_name
-            _, mod_base = dbg.symbols.GetModuleByModuleName(
-                module_name.encode("utf-8"))
-            type_id = dbg.symbols.GetTypeId(mod_base, type_only.encode("utf-8"))
-            offset = dbg.symbols.GetFieldOffset(
-                mod_base, type_id, field_name.encode("utf-8"))
-            return {
-                "type": type_name,
-                "field": field_name,
-                "offset": offset,
-                "offset_hex": f"0x{offset:X}",
-            }
-        return await run_on_com_thread(_impl)
+        return await run_on_com_thread(
+            get_debugger().get_field_offset_value, type_name, field_name)
 
     @mcp.tool()
     async def get_type_size(type_name: str) -> dict:
@@ -80,24 +44,8 @@ def register(mcp):
         Returns:
             Dict with size value.
         """
-        def _impl():
-            dbg = get_debugger()
-            parts = type_name.split("!")
-            if len(parts) == 2:
-                module_name, type_only = parts
-            else:
-                module_name = "nt"
-                type_only = type_name
-            _, mod_base = dbg.symbols.GetModuleByModuleName(
-                module_name.encode("utf-8"))
-            type_id = dbg.symbols.GetTypeId(mod_base, type_only.encode("utf-8"))
-            size = dbg.symbols.GetTypeSize(mod_base, type_id)
-            return {
-                "type": type_name,
-                "size": size,
-                "size_hex": f"0x{size:X}",
-            }
-        return await run_on_com_thread(_impl)
+        return await run_on_com_thread(
+            get_debugger().get_type_size_value, type_name)
 
     @mcp.tool()
     async def disassemble(address: str, count: int = 10) -> list[dict]:
@@ -110,25 +58,5 @@ def register(mcp):
         Returns:
             List of {address, instruction} dicts.
         """
-        def _impl():
-            dbg = get_debugger()
-            try:
-                addr = int(address, 0)
-            except ValueError:
-                addr = dbg.symbols.GetOffsetByName(address.encode("utf-8"))
-            result = []
-            current = addr
-            for _ in range(count):
-                try:
-                    text, end = dbg.control.Disassemble(current)
-                    result.append({
-                        "address": f"0x{current:016X}",
-                        "instruction": text.strip(),
-                    })
-                    if end <= current:
-                        break
-                    current = end
-                except DbgEngError:
-                    break
-            return result
-        return await run_on_com_thread(_impl)
+        return await run_on_com_thread(
+            get_debugger().disassemble_instructions, address, count)
