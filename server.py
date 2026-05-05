@@ -1,10 +1,16 @@
 """Aragorn — Direct DbgEng COM kernel debugger MCP server.
 
-This process IS the debugger. It launches kd.exe as a debug server for
-kdnet transport, then connects via DebugConnect() for full COM access.
+This process IS the debugger. It loads dbgeng.dll in-process and attaches
+to the target VM via IDebugClient5::AttachKernelWide (the `direct`
+transport). A legacy `kd_server` transport that shells out to kd.exe and
+connects via DebugConnect() is kept as a fallback (set
+ARAGORN_TRANSPORT=kd_server).
 
-Architecture:
-    MCP Client ──MCP/stdio──► Aragorn ──DebugConnect(TCP)──► kd.exe ──kdnet──► VM kernel
+Architecture (default — direct):
+    MCP Client ──MCP/stdio──► Aragorn ──AttachKernelWide──► VM kernel
+
+Architecture (legacy — kd_server):
+    MCP Client ──MCP/stdio──► Aragorn ──DebugConnect(TCP)──► kd.exe ──► VM kernel
 
 Usage:
     # Normally launched by an MCP client via .mcp.json (stdio).

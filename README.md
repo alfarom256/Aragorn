@@ -1,13 +1,15 @@
 # Aragorn
 
-Direct kernel debugger MCP server for Windows security research. Connects to Windows VM kernels via kdnet and exposes 72 tools over the [Model Context Protocol](https://modelcontextprotocol.io/).
+Direct kernel debugger MCP server for Windows security research. Attaches to a Windows VM kernel in-process via `IDebugClient5::AttachKernelWide` (no `kd.exe` subprocess) and exposes 72 tools over the [Model Context Protocol](https://modelcontextprotocol.io/).
 
-This process **is** the debugger. There's no WinDbg GUI in the loop — Aragorn loads `dbgeng.dll` directly via ctypes COM and either drives the kernel attach in-process (`AttachKernelWide`, the default) or shells out to `kd.exe` as a debug server. Either way you get full DbgEng COM access — memory, registers, breakpoints, symbols, events — exposed as MCP tools.
+This process **is** the debugger. There's no WinDbg GUI and no `kd.exe` in the loop — Aragorn loads `dbgeng.dll` directly via ctypes COM and drives the kernel attach itself (`direct` transport, the default). A legacy `kd_server` transport that shells out to `kd.exe` is kept as a fallback. Either way you get full DbgEng COM access — memory, registers, breakpoints, symbols, events — exposed as MCP tools.
 
 ```
-MCP Client ──stdio/http──► Aragorn ──┬─► (direct)   AttachKernelWide ──kdnet──► VM kernel
-                                      └─► (kd_server) DebugConnect(TCP) ──► kd.exe ──kdnet──► VM kernel
+MCP Client ──stdio/http──► Aragorn ──┬─► (direct, default)  AttachKernelWide ──► VM kernel
+                                      └─► (kd_server)        DebugConnect(TCP) ──► kd.exe ──► VM kernel
 ```
+
+The `net:port=…,key=…,target=…` connection string is the standard Windows kernel-debug network (kdnet) format — that's the wire protocol, not the transport. Both `direct` and `kd_server` use it.
 
 ## Architecture
 
